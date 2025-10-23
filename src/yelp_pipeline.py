@@ -1,21 +1,29 @@
-import re, math
+import re
 from collections import Counter
+from pathlib import Path
 import pandas as pd
 
+# ---------------- text utils ----------------
 def _tok(x: str):
     return re.findall(r"[a-zA-Z][a-zA-Z']+", str(x).lower())
 
-def load_yelp_csv(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
-    name_col = next((c for c in ["restaurant","name","business","business_name","restaurant_name"] if c in df.columns), df.columns[0])
-    rev_col  = next((c for c in ["review","text","body","comment","reviews"] if c in df.columns), df.columns[-1])
-    df = df[[name_col, rev_col]].rename(columns={name_col:"restaurant", rev_col:"review"})
-    df["restaurant"] = df["restaurant"].astype(str).str.strip()
-    df["review"] = df["review"].astype(str).str.replace(r"\s+"," ", regex=True).str.strip()
-    df = df[(df["restaurant"]!="") & (df["review"]!="")].drop_duplicates()
-    return df
+# ---------------- data loading/cleaning ----------------
+def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    d.columns = [c.strip().lower() for c in d.columns]
+    name_col = next((c for c in ["restaurant","name","business","business_name","restaurant_name"] if c in d.columns), d.columns[0])
+    rev_col  = next((c for c in ["review","text","body","comment","reviews"] if c in d.columns), d.columns[-1])
+    d = d[[name_col, rev_col]].rename(columns={name_col:"restaurant", rev_col:"review"})
+    d["restaurant"] = d["restaurant"].astype(str).str.strip()
+    d["review"] = d["review"].astype(str).str.replace(r"\s+"," ", regex=True).str.strip()
+    d = d[(d["restaurant"]!="") & (d["review"]!="")].drop_duplicates()
+    return d
 
+def load_default_csv(path: Path) -> pd.DataFrame:
+    raw = pd.read_csv(path)
+    return normalize_df(raw)
+
+# ---------------- vocabulary ----------------
 def build_synonyms(custom: dict | None = None) -> dict:
     base = {
         "service": ["service","server","staff","waiter","waitress","host","friendly","rude","attentive","quick","slow","speed","helpful","courteous"],
@@ -29,6 +37,7 @@ def build_synonyms(custom: dict | None = None) -> dict:
                 base[k] = v
     return base
 
+# ---------------- frequency after merge ----------------
 def frequency_after_merge(df: pd.DataFrame, synonyms: dict) -> pd.DataFrame:
     vocab_to_attr = {w: a for a, ws in synonyms.items() for w in ws}
     buckets = {k: Counter() for k in synonyms}
@@ -42,8 +51,10 @@ def frequency_after_merge(df: pd.DataFrame, synonyms: dict) -> pd.DataFrame:
         tot = sum(cnt.values())
         for w, n in cnt.most_common():
             rows.append({"attribute": a, "word": w, "count": int(n), "attribute_total": int(tot)})
-    return pd.DataFrame(rows).sort_values(["attribute","count"], ascending=[True, False], ignore_index=True)
+    out = pd.DataFrame(rows).sort_values(["attribute","count"], ascending=[True, False], ignore_index=True)
+    return out
 
+# ---------------- cosine similarity selection ----------------
 def select_top_by_cosine(df: pd.DataFrame, synonyms: dict, top_n: int = 200) -> pd.DataFrame:
     combined = " ".join(" ".join(ws) for ws in synonyms.values())
     try:
@@ -66,6 +77,7 @@ def select_top_by_cosine(df: pd.DataFrame, synonyms: dict, top_n: int = 200) -> 
     out["cosine_similarity"] = sims
     return out.sort_values("cosine_similarity", ascending=False).head(top_n).reset_index(drop=True)
 
+# ---------------- sentiment + recommendation ----------------
 _POS = set("good great excellent amazing awesome friendly fast quick tasty delicious fresh clean spotless helpful courteous love lovely perfect outstanding best recommend fantastic".split())
 _NEG = set("bad poor terrible awful rude slow bland cold overcooked undercooked dirty messy greasy smelly wait long disappointed worst never".split())
 

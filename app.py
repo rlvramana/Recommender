@@ -1,53 +1,45 @@
+import sys, pathlib
+from pathlib import Path
 import streamlit as st
 import pandas as pd
-from pathlib import Path
 
+# allow "from src..." imports when running: streamlit run app/app.py
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from yelp_pipeline import (
-    build_synonyms,
-    frequency_after_merge,
-    select_top_by_cosine,
-    recommend_top3,
+from src.config import DATA_PATH, TOP_N
+from src.yelp_pipeline import (
+    normalize_df, load_default_csv, build_synonyms,
+    frequency_after_merge, select_top_by_cosine, recommend_top3
 )
 
 st.set_page_config(page_title="Yelp Recommendation", layout="wide")
 st.title("Yelp Recommendation")
 
-# ---------- default file + session handling ----------
-DEFAULT_PATH = Path(__file__).resolve().parent / "data" / "yelp_reviews.csv"
-
 @st.cache_data
-def load_csv(src):
-    return pd.read_csv(src)
+def load_uploaded_csv(file_like):
+    return normalize_df(pd.read_csv(file_like))
 
+# First run uses the shared default CSV
 if "source" not in st.session_state:
     st.session_state["source"] = "default"
-    st.session_state["df"] = load_csv(DEFAULT_PATH)
+    st.session_state["df"] = load_default_csv(DATA_PATH)
 
 uploaded = st.file_uploader("CSV (restaurant, review)", type=["csv"])
-
 if uploaded is not None:
-    st.session_state["df"] = load_csv(uploaded)
+    st.session_state["df"] = load_uploaded_csv(uploaded)
     st.session_state["source"] = "uploaded"
 
+# Optional reset
 if st.sidebar.button("Revert to default file"):
-    st.session_state["df"] = load_csv(DEFAULT_PATH)
+    st.session_state["df"] = load_default_csv(DATA_PATH)
     st.session_state["source"] = "default"
+    st.cache_data.clear()
     st.rerun()
 
 df = st.session_state["df"]
-st.caption(
-    "Using: default data/yelp_reviews.csv" if st.session_state["source"] == "default"
-    else "Using: uploaded file"
-)
+st.caption("Using: default data/yelp_reviews.csv" if st.session_state["source"]=="default" else "Using: uploaded file")
 
-# ---------- light schema check ----------
-df.columns = [c.strip().lower() for c in df.columns]
-if "restaurant" not in df.columns or "review" not in df.columns:
-    st.error("CSV needs columns: restaurant, review")
-    st.stop()
-
-# ---------- parameters ----------
+# Parameters
 base = build_synonyms()
 with st.expander("Edit attribute keywords"):
     s = st.text_input("Service", ", ".join(base["service"]))
@@ -61,23 +53,17 @@ with st.expander("Edit attribute keywords"):
         "location": [w.strip() for w in l.split(",") if w.strip()],
     }
 
-top_n = st.number_input("Top N reviews", min_value=50, max_value=500, value=200, step=10)
+top_n = st.number_input("Top N reviews", min_value=50, max_value=500, value=TOP_N, step=10)
 
-# ---------- analysis ----------
-st.subheader("Word frequencies (merged)")
+# Analysis
+st.subheader("Word frequencies after merge")
 freq = frequency_after_merge(df, syn)
 st.dataframe(freq, use_container_width=True)
-st.download_button("Download frequency_table.csv", freq.to_csv(index=False).encode("utf-8"),
-                   "frequency_table.csv", "text/csv")
 
 st.subheader(f"Top {int(top_n)} reviews by cosine similarity")
 topk = select_top_by_cosine(df, syn, top_n=int(top_n))
-st.dataframe(topk[["restaurant", "review", "cosine_similarity"]], use_container_width=True)
-st.download_button("Download top_reviews.csv", topk.to_csv(index=False).encode("utf-8"),
-                   "top_reviews.csv", "text/csv")
+st.dataframe(topk[["restaurant","review","cosine_similarity"]], use_container_width=True)
 
-st.subheader("Top 3 recommendations (avg sentiment of selected reviews)")
+st.subheader("Top 3 recommendations (avg sentiment)")
 top3 = recommend_top3(topk)
 st.dataframe(top3, use_container_width=True)
-st.download_button("Download recommendations_top3.csv", top3.to_csv(index=False).encode("utf-8"),
-                   "recommendations_top3.csv", "text/csv")
